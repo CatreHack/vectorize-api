@@ -161,6 +161,15 @@ class VTracerVectorizer(Vectorizer):
         self.hierarchical = hierarchical
 
     def vectorize(self, image_bytes: bytes) -> str:
+        try:
+            return self._vectorize_with_vtracer(image_bytes)
+        except Exception as exc:  # noqa: BLE001
+            # Salvavidas: si vtracer no esta instalado o falla, se usa el
+            # motor de contornos para NO dejar al usuario sin resultado.
+            print(f"[vtracer] fallo ({type(exc).__name__}: {exc}); usando contornos")
+            return ContourVectorizer().vectorize(image_bytes)
+
+    def _vectorize_with_vtracer(self, image_bytes: bytes) -> str:
         import vtracer
 
         with tempfile.TemporaryDirectory() as tmp:

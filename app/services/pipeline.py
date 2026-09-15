@@ -63,7 +63,18 @@ def convert_image(image_bytes: bytes, mode: str | None = None,
 
     # 2) Vectorizacion con los parametros de calidad del modo.
     vectorizer = get_vectorizer(preset.get("vectorizer"))
-    svg = vectorizer.vectorize(fuente)
+    try:
+        svg = vectorizer.vectorize(fuente)
+    except Exception as exc:  # noqa: BLE001
+        # Red de seguridad final: nunca devolver un error 500 al usuario
+        # si al menos uno de los dos motores puede producir un SVG.
+        avisos.append(
+            f"El motor de vectorizacion principal fallo "
+            f"({type(exc).__name__}); se uso el metodo clasico."
+        )
+        from app.adapters.vectorizer import ContourVectorizer
+
+        svg = ContourVectorizer().vectorize(fuente)
 
     return ConversionResult(
         png_transparent=fuente,

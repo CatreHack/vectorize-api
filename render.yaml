@@ -4,22 +4,20 @@ services:
     runtime: python
     plan: free
     pythonVersion: "3.13.5"
-    buildCommand: pip install -r requirements.txt
+    # Se descarga el modelo de IA durante el BUILD (no en la primera
+    # peticion del usuario): asi la primera conversion no depende de la
+    # red ni del tiempo de arranque del contenedor.
+    buildCommand: pip install -r requirements.txt && python -c "from rembg import new_session; new_session('u2netp')"
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: "3.13.5"
-      # Motores de alta calidad. Los presets por modo (foto/logo/dibujo)
-      # viven en app/config.py; estas variables solo eligen la
-      # implementacion concreta de cada etapa.
+      # Motor de remocion de fondo: rembg (IA). Cae a floodfill si falla.
       - key: BACKGROUND_REMOVER_ENGINE
         value: rembg
       - key: REMBG_MODEL
         value: u2netp
+      # Motor de vectorizacion: vtracer (curvas Bezier reales).
       - key: VECTORIZER_ENGINE
         value: vtracer
-      - key: MAX_UPLOAD_SIZE_MB
-        value: "10"
-      - key: ALLOWED_ORIGINS
-        value: "https://catrehack.github.io"

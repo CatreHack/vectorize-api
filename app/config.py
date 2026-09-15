@@ -104,6 +104,7 @@ MODOS = {
         # se conservan detalles pequenos (>=4 px) y la esquina se respeta
         # a partir de 45 grados para no redondear el line art.
         "vectorizer": {
+            "colormode": "binary",
             "color_precision": 4,
             "filter_speckle": 4,
             "path_precision": 4,
