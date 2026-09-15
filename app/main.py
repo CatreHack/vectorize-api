@@ -77,33 +77,45 @@ def mem():
         except Exception:  # noqa: BLE001
             return None
 
+    meminfo = leer("/proc/meminfo") or ""
+    for linea in meminfo.splitlines():
+        if linea.startswith("MemAvailable:"):
+            info["meminfo_MemAvailable_MB"] = round(int(linea.split()[1]) / 1024, 1)
+        elif linea.startswith("MemTotal:"):
+            info["meminfo_MemTotal_MB"] = round(int(linea.split()[1]) / 1024, 1)
+
     for clave, path in (
-        ("meminfo_MemAvailable", "/proc/meminfo"),
         ("cgroup_v2_max", "/sys/fs/cgroup/memory.max"),
         ("cgroup_v2_current", "/sys/fs/cgroup/memory.current"),
         ("cgroup_v1_limit", "/sys/fs/cgroup/memory/memory.limit_in_bytes"),
         ("cgroup_v1_usage", "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
     ):
         valor = leer(path)
-        if clave == "meminfo_MemAvailable" and valor:
-            for linea in valor.splitlines():
-                if linea.startswith("MemAvailable:"):
-                    info["meminfo_MemAvailable_MB"] = round(
-                        int(linea.split()[1]) / 1024, 1
-                    )
-                    break
-            continue
         if valor:
             info[clave] = valor
 
-    import os as _os
-    info["rss_MB"] = round(
-        int(leer("/proc/self/status").split("VmRSS:")[1].split()[0]) / 1024, 1
-        if leer("/proc/self/status") and "VmRSS:" in (leer("/proc/self/status") or "")
-        else 0,
-        1,
-    )
-    info["pid"] = _os.getpid()
+    status = leer("/proc/self/status") or ""
+    for linea in status.splitlines():
+        if linea.startswith("VmRSS:"):
+            info["rss_MB"] = round(int(linea.split()[1]) / 1024, 1)
+            break
+
+    info["pid"] = os.getpid()
+
+    # Interpretacion rapida: si el cgroup declara un limite mucho menor que
+    # MemTotal, /proc/meminfo describe el HOST y no sirve como guarda; en ese
+    # caso hay que decidir por umbral fijo, no por memoria disponible.
+    try:
+        tope = info.get("cgroup_v2_max")
+        if isinstance(tope, str) and tope.isdigit():
+            limite_mb = round(int(tope) / 1024 / 1024, 1)
+            info["cgroup_v2_max_MB"] = limite_mb
+            total = info.get("meminfo_MemTotal_MB")
+            if isinstance(total, (int, float)):
+                info["meminfo_es_del_host"] = bool(total > limite_mb * 1.5)
+    except Exception:  # noqa: BLE001
+        pass
+
     return info
 
 
