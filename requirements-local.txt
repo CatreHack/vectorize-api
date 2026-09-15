@@ -1,0 +1,11 @@
+# Dependencias solo para probar LOCALMENTE en este entorno (Android/Termux aarch64).
+# Aqui Rust no puede compilar watchfiles/httptools/uvloop, asi que se usa
+# uvicorn puro (sin [standard]) y sin boto3 (solo hace falta para R2).
+fastapi==0.115.0
+uvicorn==0.32.0
+python-multipart==0.0.12
+opencv-python-headless==4.10.0.84
+numpy==2.1.3
+pillow==11.0.0
+pydantic==2.9.2
+requests==2.32.3
