@@ -1,4 +1,3 @@
-# Dependencias de PRODUCCION (Render: Linux x86_64 real -> wheels precompiladas)
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 python-multipart==0.0.12
@@ -8,5 +7,14 @@ pillow==11.0.0
 pydantic==2.9.2
 requests==2.32.3
 boto3==1.35.0
-# Motores de produccion recomendados (opcionales, activar en config.py):
-# vtracer==0.6.11
+
+# --- Motores de alta calidad ---
+# vtracer: vectorizacion con curvas Bezier reales y soporte de miles de
+# colores (imprescindible para el modo foto). Wheel cp313 manylinux listo.
+vtracer==0.6.15
+
+# rembg + onnxruntime: quitar fondo con red neuronal U^2-Net. Entiende la
+# imagen (persona/objeto) en vez de adivinar por color, por lo que funciona
+# con fondos complejos y sujetos de tonos claros.
+rembg==2.0.84
+onnxruntime==1.30.0

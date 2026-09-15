@@ -2,12 +2,12 @@ import uuid
 import base64
 import os
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app.config import MAX_UPLOAD_SIZE_MB, ALLOWED_ORIGINS
+from app.config import MAX_UPLOAD_SIZE_MB, ALLOWED_ORIGINS, MODOS, MODO_POR_DEFECTO
 from app.services.pipeline import convert_image
 from app.storage import get_storage
 
@@ -30,6 +30,16 @@ class ConvertResponse(BaseModel):
     job_id: str
     svg_base64: str
     png_base64: str
+    modo: str = MODO_POR_DEFECTO
+    fondo_removido: bool = False
+    avisos: list[str] = []
+
+
+class ModoInfo(BaseModel):
+    id: str
+    etiqueta: str
+    descripcion: str
+    quitar_fondo: bool
 
 
 @app.get("/")
@@ -40,6 +50,7 @@ def root():
         "status": "ok",
         "docs": "/docs",
         "health": "/api/health",
+        "modos": list(MODOS.keys()),
     }
 
 
@@ -48,8 +59,22 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/modos", response_model=list[ModoInfo])
+def listar_modos():
+    """Describe los modos disponibles para que el frontend se arme solo."""
+    return [
+        ModoInfo(
+            id=clave,
+            etiqueta=preset["etiqueta"],
+            descripcion=preset["descripcion"],
+            quitar_fondo=bool(preset["quitar_fondo"]),
+        )
+        for clave, preset in MODOS.items()
+    ]
+
+
 @app.post("/api/convert", response_model=ConvertResponse)
-async def convert(file: UploadFile = File(...)):
+async def convert(file: UploadFile = File(...), mode: str = Form(MODO_POR_DEFECTO)):
     if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(400, "Formato no soportado. Usa JPG, PNG o WEBP.")
 
@@ -59,7 +84,7 @@ async def convert(file: UploadFile = File(...)):
         raise HTTPException(400, f"La imagen supera el limite de {MAX_UPLOAD_SIZE_MB}MB")
 
     try:
-        result = convert_image(image_bytes)
+        result = convert_image(image_bytes, mode=mode)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception:
@@ -73,6 +98,9 @@ async def convert(file: UploadFile = File(...)):
         job_id=job_id,
         svg_base64=base64.b64encode(result.svg.encode("utf-8")).decode(),
         png_base64=base64.b64encode(result.png_transparent).decode(),
+        modo=result.modo,
+        fondo_removido=result.fondo_removido,
+        avisos=result.avisos,
     )
 
 

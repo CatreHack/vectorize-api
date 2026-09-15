@@ -121,18 +121,47 @@ class ContourVectorizer(Vectorizer):
 
 class VTracerVectorizer(Vectorizer):
     """
-    Adaptador de producción para VTracer (recomendado como motor principal
-    una vez que el entorno tenga acceso a internet para instalar el paquete).
+    Motor de vectorizacion de alta fidelidad via VTracer.
 
-    Requiere: pip install vtracer
+    Es el motor recomendado: genera curvas Bezier REALES (no poligonos
+    rectos), soporta miles de colores y preserva degradados y sombras.
+    Con la configuracion adecuada da buenos resultados tanto en logos
+    planos como en fotografias complejas.
+
+    Parametros que importan:
+      - colormode: "color" (fotos/logos a color) o "binary" (line art)
+      - color_precision (1-8): cuantos bits por canal. Mas alto = mas
+        colores y mas detalle, pero SVG mas pesado. 8 = fotografia.
+      - filter_speckle: descarta manchas de menos de N px (limpia ruido)
+      - path_precision: decimales en las coordenadas. 8 = curvas suaves
+      - corner_threshold (grados): angulo a partir del cual VTracer
+        respeta una esquina dura en vez de suavizarla con curva
+      - mode: "spline" (curvas suaves) o "polygon" (recto, mas liviano)
+      - layer_difference: umbral para separar capas de color
     """
 
-    def __init__(self, color_precision: int = 6, filter_speckle: int = 4):
+    def __init__(
+        self,
+        colormode: str = "color",
+        color_precision: int = 6,
+        filter_speckle: int = 4,
+        path_precision: int = 8,
+        corner_threshold: int = 60,
+        mode: str = "spline",
+        layer_difference: int = 16,
+        hierarchical: str = "stacked",
+    ):
+        self.colormode = colormode
         self.color_precision = color_precision
         self.filter_speckle = filter_speckle
+        self.path_precision = path_precision
+        self.corner_threshold = corner_threshold
+        self.mode = mode
+        self.layer_difference = layer_difference
+        self.hierarchical = hierarchical
 
     def vectorize(self, image_bytes: bytes) -> str:
-        import vtracer  # import local: solo se necesita si se usa este adaptador
+        import vtracer
 
         with tempfile.TemporaryDirectory() as tmp:
             in_path = os.path.join(tmp, "input.png")
@@ -143,9 +172,14 @@ class VTracerVectorizer(Vectorizer):
             vtracer.convert_image_to_svg_py(
                 in_path,
                 out_path,
-                colormode="color",
+                colormode=self.colormode,
                 color_precision=self.color_precision,
                 filter_speckle=self.filter_speckle,
+                path_precision=self.path_precision,
+                corner_threshold=self.corner_threshold,
+                mode=self.mode,
+                layer_difference=self.layer_difference,
+                hierarchical=self.hierarchical,
             )
             with open(out_path, "r") as f:
                 return f.read()

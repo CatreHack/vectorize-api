@@ -83,6 +83,62 @@ class FloodFillBackgroundRemover(BackgroundRemover):
         return buf.tobytes()
 
 
+class RembgBackgroundRemover(BackgroundRemover):
+    """
+    Motor con IA (red neuronal U^2-Net) via la libreria `rembg`.
+
+    A diferencia del flood-fill (que adivina por color desde las esquinas),
+    este motor ENTIENDE que hay una persona/objeto en la imagen y lo separa
+    del fondo, incluso con fondos complejos (playa, ciudad, interior),
+    pelo suelto, bordes difusos o tonos claros parecidos al fondo.
+
+    Modelos disponibles (se descargan una sola vez y quedan cacheados):
+      - "u2netp"  ~4.7 MB  -> liviano, entra comodo en el plan free de Render
+      - "u2net"   ~176 MB  -> maxima calidad, requiere mas RAM
+      - "isnet-general-use" -> muy buena calidad, tamano intermedio
+
+    Nunca deja la peticion sin respuesta: si la IA no esta disponible
+    (modelo no descargado, sin memoria, etc.) cae al flood-fill clasico.
+    """
+
+    def __init__(self, model_name: str = "u2netp", fallback: bool = True):
+        self.model_name = model_name
+        self.fallback = fallback
+
+    def _remove_with_ai(self, image_bytes: bytes) -> bytes:
+        from rembg import remove, new_session  # import local: pesa mucho
+
+        # Reutilizar la sesion entre peticiones evita recargar el modelo
+        # (que es lo caro) en cada conversion.
+        session = _get_rembg_session(self.model_name)
+        salida = remove(image_bytes, session=session)
+        if not salida:
+            raise RuntimeError("rembg devolvio una imagen vacia")
+        return salida
+
+    def remove_background(self, image_bytes: bytes) -> bytes:
+        try:
+            return self._remove_with_ai(image_bytes)
+        except Exception as exc:  # noqa: BLE001 - cualquier fallo de IA cae al clasico
+            if not self.fallback:
+                raise
+            print(f"[rembg] fallo ({type(exc).__name__}: {exc}); usando flood-fill")
+            return FloodFillBackgroundRemover().remove_background(image_bytes)
+
+
+# Cache de sesiones de rembg: el modelo se carga una vez por proceso.
+_REMBG_SESSIONS: dict = {}
+
+
+def _get_rembg_session(model_name: str):
+    """Devuelve (creando si hace falta) la sesion de rembg para un modelo."""
+    if model_name not in _REMBG_SESSIONS:
+        from rembg import new_session
+
+        _REMBG_SESSIONS[model_name] = new_session(model_name)
+    return _REMBG_SESSIONS[model_name]
+
+
 class PhotoRoomBackgroundRemover(BackgroundRemover):
     """
     Adaptador de producción para PhotoRoom API (~$0.01-0.02 por imagen).

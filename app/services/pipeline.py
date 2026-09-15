@@ -1,31 +1,74 @@
 """
-Orquesta el flujo completo: quitar fondo -> vectorizar -> devolver
-resultados. No sabe nada de HTTP ni de qué proveedor concreto está detrás
-de cada adaptador — solo conoce las interfaces.
-"""
-from dataclasses import dataclass
+Orquesta el flujo completo segun el MODO elegido por el usuario:
 
-from app.config import get_background_remover, get_vectorizer
+    foto   -> vectorizar la imagen ORIGINAL (con todo su detalle y fondo)
+    logo   -> quitar fondo con IA + vectorizar con curvas limpias
+    dibujo -> quitar fondo con IA + vectorizar como line art
+
+No sabe nada de HTTP ni de que proveedor concreto esta detras de cada
+adaptador: solo conoce las interfaces y los presets de config.
+"""
+from dataclasses import dataclass, field
+
+from app.config import get_background_remover, get_modo, get_vectorizer
 
 
 @dataclass
 class ConversionResult:
     png_transparent: bytes
     svg: str
+    modo: str = "foto"
+    fondo_removido: bool = False
+    # Avisos no fatales (p. ej. "la IA no estaba disponible, se uso el
+    # metodo clasico"). Sirven para informar al usuario sin romper nada.
+    avisos: list = field(default_factory=list)
 
 
-def convert_image(image_bytes: bytes, remove_background: bool = True) -> ConversionResult:
+def convert_image(image_bytes: bytes, mode: str | None = None,
+                  remove_background: bool | None = None) -> ConversionResult:
     """
-    Ejecuta el pipeline sobre una imagen y devuelve el PNG transparente
-    y el SVG resultante.
+    Ejecuta el pipeline sobre una imagen segun el modo y devuelve el PNG
+    transparente y el SVG resultante.
+
+    `mode` elige el preset (foto | logo | dibujo). El parametro
+    `remove_background` solo se usa si se pasa explicitamente: permite
+    forzar el comportamiento ignorando el preset.
     """
-    if remove_background:
-        remover = get_background_remover()
-        png_transparent = remover.remove_background(image_bytes)
+    modo, preset = get_modo(mode)
+    avisos: list = []
+
+    # 1) Fondo: el preset del modo decide. En "foto" NO se toca para no
+    #    destruir informacion (cielo, sombras, fondo) que luego el
+    #    vectorizador necesita para reconstruir la imagen completa.
+    if remove_background is None:
+        quitar = bool(preset["quitar_fondo"])
     else:
-        png_transparent = image_bytes
+        quitar = bool(remove_background)
 
-    vectorizer = get_vectorizer()
-    svg = vectorizer.vectorize(png_transparent)
+    if quitar:
+        remover = get_background_remover()
+        try:
+            fuente = remover.remove_background(image_bytes)
+        except Exception as exc:  # noqa: BLE001
+            # Ultimo salvavidas: si TODO falla, vectorizamos el original
+            # antes que devolver un error al usuario.
+            fuente = image_bytes
+            quitar = False
+            avisos.append(
+                f"No se pudo quitar el fondo automaticamente "
+                f"({type(exc).__name__}); se vectorizo la imagen original."
+            )
+    else:
+        fuente = image_bytes
 
-    return ConversionResult(png_transparent=png_transparent, svg=svg)
+    # 2) Vectorizacion con los parametros de calidad del modo.
+    vectorizer = get_vectorizer(preset.get("vectorizer"))
+    svg = vectorizer.vectorize(fuente)
+
+    return ConversionResult(
+        png_transparent=fuente,
+        svg=svg,
+        modo=modo,
+        fondo_removido=quitar,
+        avisos=avisos,
+    )
