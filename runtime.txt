@@ -1,0 +1,5 @@
+# Fijar la version de Python para Render.
+# IMPORTANTE: pydantic-core solo publica wheels hasta cp313. Con Python 3.14
+# Render intenta compilarlo desde Rust y falla con "metadata-generation-failed".
+# Por eso se fija 3.13 explicitamente.
+python_version = "3.13"

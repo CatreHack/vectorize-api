@@ -3,15 +3,21 @@ services:
     name: vectorize-api
     runtime: python
     plan: free
+    # Python 3.13 (NO 3.14): pydantic-core no tiene wheels para 3.14 y el
+    # build falla con "metadata-generation-failed".
+    pythonVersion: "3.13"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11.9"
-      - key: ALLOWED_ORIGINS
-        value: "*"
+        value: "3.13"
+      - key: BACKGROUND_REMOVER_ENGINE
+        value: floodfill
+      - key: VECTORIZER_ENGINE
+        value: contour
       - key: MAX_UPLOAD_SIZE_MB
         value: "10"
-      - key: STORAGE_DIR
-        value: "./storage"
+      # Restringir CORS al sitio de GitHub Pages (dejar vacio = permitir todos)
+      - key: ALLOWED_ORIGINS
+        value: "https://catrehack.github.io"
