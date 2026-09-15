@@ -14,6 +14,31 @@ import cv2
 import numpy as np
 
 
+# RAM disponible (MB) que se exige para intentar el vectorizado a resolucion
+# completa. Por debajo de esto se reduce la imagen ANTES de llamar a vtracer:
+# reducir despues no sirve, porque el proceso ya murio (OOM kill) y el
+# usuario solo ve un 502.
+RAM_MINIMA_VTRACER_MB = 420
+
+
+def _hay_ram_para_vtracer_completo() -> bool:
+    """
+    Mira la memoria DISPONIBLE en este instante (no el limite del plan).
+
+    Sin esto se hacia el intento a resolucion completa con la memoria ya
+    ocupada por otra peticion y el proceso moria; con el umbral se degrada
+    de forma controlada (imagen algo menor) en lugar de fallar.
+    """
+    try:
+        with open("/proc/meminfo", "r") as fh:
+            for linea in fh:
+                if linea.startswith("MemAvailable:"):
+                    return int(linea.split()[1]) / 1024 >= RAM_MINIMA_VTRACER_MB
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 class Vectorizer(ABC):
     """Contrato que debe cumplir cualquier motor de vectorización."""
 
@@ -177,10 +202,43 @@ class VTracerVectorizer(Vectorizer):
         # escribir los bytes originales con nombre .png rompe con JPEG
         # (y WebP, BMP...) y produce un 500 al no poder decodificar.
         #
-        # Se acota el lado mayor: vtracer reserva memoria proporcional al
-        # AREA de la imagen y en 512 MB una foto grande mata el proceso.
-        # 1000 px conserva de sobra el detalle visual del vectorizado.
-        png_bytes = self._to_png(image_bytes, max_lado=1000)
+        # TAMANO: vtracer reserva memoria en funcion del AREA de la imagen y
+        # del color_precision. En el plan free (512 MB) una foto grande con
+        # color_precision=8 mata el proceso -> 502 -> el navegador mostraba
+        # "Failed to fetch" / el backend degradaba en silencio.
+        #
+        # Estrategia: se intenta PRIMERO a resolucion completa para no perder
+        # calidad (el usuario prioriza calidad sobre peso). Solo si al proceso
+        # no le queda RAM para el intento completo se reduce antes de entrar,
+        # de modo que el resultado siga saliendo en vez de reventar.
+        intentos: list[int | None] = [None, 1000, 800]
+        if not _hay_ram_para_vtracer_completo():
+            intentos = [1000, 800]
+
+        ultimo_error: Exception | None = None
+        for max_lado in intentos:
+            png_bytes = self._to_png(image_bytes, max_lado=max_lado)
+            try:
+                return self._vtracer_png(png_bytes)
+            except MemoryError as exc:  # noqa: PERF203
+                ultimo_error = exc
+                print(f"[vtracer] MemoryError con max_lado={max_lado}; "
+                      f"reintentando mas pequeno")
+            except Exception as exc:  # noqa: BLE001
+                ultimo_error = exc
+                print(f"[vtracer] fallo ({type(exc).__name__}: {exc}) con "
+                      f"max_lado={max_lado}")
+                # Un fallo que NO es de memoria (p.ej. vtracer ausente) no se
+                # arregla reduciendo: se propaga al salvavidas de contornos.
+                raise
+
+        raise ultimo_error if ultimo_error else MemoryError(
+            "vtracer no pudo vectorizar la imagen"
+        )
+
+    def _vtracer_png(self, png_bytes: bytes) -> str:
+        """Ejecuta vtracer sobre bytes PNG ya normalizados y acotados."""
+        import vtracer
 
         with tempfile.TemporaryDirectory() as tmp:
             in_path = os.path.join(tmp, "input.png")
