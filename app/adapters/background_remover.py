@@ -52,6 +52,11 @@ class SmartBackgroundRemover(BackgroundRemover):
         self.margin_ratio = margin_ratio
         self.feather = feather
 
+        # Se activan si hubo que usar la mascara rapida por falta de memoria;
+        # el pipeline los convierte en un aviso visible al usuario.
+        self.degradado = False
+        self.motivo_degradado = ""
+
     def _auto_mask(self, img: np.ndarray) -> np.ndarray:
         """
         Construye la 'semilla' inicial de GrabCut (0=fondo seguro,
@@ -120,6 +125,11 @@ class SmartBackgroundRemover(BackgroundRemover):
         if not _hay_ram_para_grabcut():
             print("[grabcut] RAM muy justa; usando mascara por esquinas")
             fg_mask = self._fallback_corner_mask(img_work)
+            self.degradado = True
+            self.motivo_degradado = (
+                "Habia poca memoria libre en el servidor, asi que el fondo se "
+                "quito con el metodo rapido (borde menos preciso)."
+            )
         else:
             # Suavizado leve: ayuda a GrabCut a no engancharse con ruido/JPEG.
             blurred = cv2.bilateralFilter(img_work, 5, 40, 40)
@@ -372,20 +382,26 @@ def _hay_ram_para_grabcut() -> bool:
     Comprueba si al proceso le queda RAM suficiente para GrabCut.
 
     A diferencia de _hay_ram_suficiente() (que mira el LIMITE del cgroup para
-    decidir si cabe la red neuronal), aqui interesa la memoria DISPONIBLE en
-    este instante: GrabCut no falla por el limite del plan, falla cuando el
-    proceso ya tiene la memoria tomada por otras peticiones o por el modelo.
+    decidir si cabe la red neuronal), aqui interesa la memoria LIBRE ahora
+    mismo dentro del contenedor: GrabCut no falla por el limite del plan,
+    falla cuando el proceso ya tiene la memoria tomada por otras peticiones.
+
+    IMPORTANTE: se mide con el cgroup, NO con /proc/meminfo. En Render
+    meminfo describe el host fisico (decia "13 GB disponibles" con un limite
+    real de 512 MB), asi que la guarda nunca se disparaba y el proceso
+    moria por OOM en vez de degradar de forma controlada.
     """
     try:
-        with open("/proc/meminfo", "r") as fh:
-            for linea in fh:
-                if linea.startswith("MemAvailable:"):
-                    disponible_mb = int(linea.split()[1]) / 1024
-                    return disponible_mb >= RAM_MINIMA_GRABCUT_MB
+        from app.adapters.vectorizer import _mem_libre_contenedor_mb
+
+        libre = _mem_libre_contenedor_mb()
+        if libre is None:
+            # Sin dato fiable: ser conservador (usar la mascara barata) en
+            # lugar de arriesgar un OOM que tumba la peticion entera.
+            return False
+        return libre >= RAM_MINIMA_GRABCUT_MB
     except Exception:  # noqa: BLE001
-        pass
-    # Si no se puede medir, no bloqueamos el camino normal.
-    return True
+        return False
 
 
 def _permite_ia() -> bool:

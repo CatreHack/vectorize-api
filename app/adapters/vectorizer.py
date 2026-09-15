@@ -14,29 +14,70 @@ import cv2
 import numpy as np
 
 
-# RAM disponible (MB) que se exige para intentar el vectorizado a resolucion
-# completa. Por debajo de esto se reduce la imagen ANTES de llamar a vtracer:
-# reducir despues no sirve, porque el proceso ya murio (OOM kill) y el
-# usuario solo ve un 502.
+# RAM (MB) que se exige LIBRE DENTRO DEL CONTENEDOR para intentar el
+# vectorizado a resolucion completa. Por debajo de esto se reduce la imagen
+# ANTES de llamar a vtracer: reducir despues no sirve, porque el proceso ya
+# murio (OOM kill) y el usuario solo ve un 502.
 RAM_MINIMA_VTRACER_MB = 420
 
 
-def _hay_ram_para_vtracer_completo() -> bool:
+def _mem_libre_contenedor_mb() -> float | None:
     """
-    Mira la memoria DISPONIBLE en este instante (no el limite del plan).
+    Memoria realmente libre DENTRO del contenedor, en MB.
 
-    Sin esto se hacia el intento a resolucion completa con la memoria ya
-    ocupada por otra peticion y el proceso moria; con el umbral se degrada
-    de forma controlada (imagen algo menor) en lugar de fallar.
+    OJO (error que costo varios 502): /proc/meminfo describe el HOST fisico,
+    no el contenedor. En Render devolvia "13 GB disponibles" mientras el
+    limite real era 512 MB, asi que cualquier guarda basada en meminfo nunca
+    se activaba y el proceso moria por OOM.
+
+    La fuente valida es el cgroup:
+        libre = memory.max - memory.current
+    Si no hay cgroup legible se devuelve None para que el llamador decida con
+    un criterio conservador (no "asumir que hay memoria").
     """
     try:
-        with open("/proc/meminfo", "r") as fh:
-            for linea in fh:
-                if linea.startswith("MemAvailable:"):
-                    return int(linea.split()[1]) / 1024 >= RAM_MINIMA_VTRACER_MB
+        tope = None
+        for ruta in ("/sys/fs/cgroup/memory.max",
+                     "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+            try:
+                with open(ruta, "r") as fh:
+                    valor = fh.read().strip()
+                if valor and valor != "max" and valor.isdigit():
+                    tope = int(valor)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+
+        actual = None
+        for ruta in ("/sys/fs/cgroup/memory.current",
+                     "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+            try:
+                with open(ruta, "r") as fh:
+                    valor = fh.read().strip()
+                if valor and valor.isdigit():
+                    actual = int(valor)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+
+        if tope is not None:
+            # Sin lectura de consumo, el peor caso es que TODO el tope este
+            # ocupado; pero para no degradar de mas se asume medio tope.
+            usado = actual if actual is not None else tope // 2
+            return max(0.0, (tope - usado) / 1024 / 1024)
     except Exception:  # noqa: BLE001
         pass
-    return True
+    return None
+
+
+def _hay_ram_para_vtracer_completo() -> bool:
+    """True si conviene intentar vtracer a resolucion completa."""
+    libre = _mem_libre_contenedor_mb()
+    if libre is None:
+        # Sin datos: ser conservador. En un plan de 512 MB la resolucion
+        # completa en modo color es justo la que revienta, asi que se reduce.
+        return False
+    return libre >= RAM_MINIMA_VTRACER_MB
 
 
 class Vectorizer(ABC):
@@ -185,6 +226,12 @@ class VTracerVectorizer(Vectorizer):
         self.layer_difference = layer_difference
         self.hierarchical = hierarchical
 
+        # Se activan cuando el motor tuvo que reducir la resolucion por
+        # falta de memoria; el pipeline los convierte en un aviso visible
+        # para no entregar un resultado degradado como si fuera normal.
+        self.degradado = False
+        self.motivo_degradado = ""
+
     def vectorize(self, image_bytes: bytes) -> str:
         try:
             return self._vectorize_with_vtracer(image_bytes)
@@ -232,6 +279,13 @@ class VTracerVectorizer(Vectorizer):
                 # arregla reduciendo: se propaga al salvavidas de contornos.
                 raise
 
+        # Se agotaron los intentos: se avisa para que el pipeline lo cuente
+        # al usuario (nunca devolver un SVG degradado como si fuera normal).
+        self.degradado = True
+        self.motivo_degradado = (
+            "La imagen es grande y el plan actual tiene poca memoria: "
+            "se vectorizo en tamano reducido."
+        )
         raise ultimo_error if ultimo_error else MemoryError(
             "vtracer no pudo vectorizar la imagen"
         )
