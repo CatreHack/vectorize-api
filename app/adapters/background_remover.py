@@ -46,7 +46,7 @@ class SmartBackgroundRemover(BackgroundRemover):
     graficos sobre fondo claro.
     """
 
-    def __init__(self, iterations: int = 5, margin_ratio: float = 0.06,
+    def __init__(self, iterations: int = 3, margin_ratio: float = 0.06,
                  feather: int = 3):
         self.iterations = iterations
         self.margin_ratio = margin_ratio
@@ -93,7 +93,14 @@ class SmartBackgroundRemover(BackgroundRemover):
 
         # Trabajar en un tamano acotado: GrabCut es costoso y para pantalla
         # no hace falta mas resolucion. Mantiene proporcion y acelera.
-        MAX_LADO = 1200
+        #
+        # OJO: el coste de memoria de GrabCut crece MUY rapido con el area
+        # (construye un grafo por pixel + modelos de color). Con 700 px de
+        # lado, una imagen de 1024x1024 ya consumia >512 MB y el proceso
+        # moria con OOM (el usuario veia 502 y despues "Failed to fetch").
+        # 600 px es el punto dulce: comodo en 512 MB y visualmente
+        # indistinguible para un vectorizado de pantalla.
+        MAX_LADO = 600
         escala = 1.0
         if max(h, w) > MAX_LADO:
             escala = MAX_LADO / float(max(h, w))
@@ -106,27 +113,37 @@ class SmartBackgroundRemover(BackgroundRemover):
 
         hw, ww = img_work.shape[:2]
 
-        # Suavizado leve: ayuda a GrabCut a no engancharse con ruido/JPEG.
-        blurred = cv2.bilateralFilter(img_work, 5, 40, 40)
-
-        mask, rect = self._auto_mask(img_work)
-
-        bgd = np.zeros((1, 65), np.float64)
-        fgd = np.zeros((1, 65), np.float64)
-
-        try:
-            cv2.grabCut(
-                blurred, mask, rect, bgd, fgd,
-                self.iterations, cv2.GC_INIT_WITH_MASK,
-            )
-            # 0(BGD) y 2(PR_BGD) -> fondo ; 1(FGD) y 3(PR_FGD) -> objeto
-            fg_mask = np.where(
-                (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0
-            ).astype(np.uint8)
-        except cv2.error:
-            # Si GrabCut no puede converger, degradamos a umbral de fondo
-            # por color de esquinas (mejor que devolver un error).
+        # Guarda de memoria: GrabCut construye un grafo del tamano de la
+        # imagen. Si al proceso le queda muy poca RAM, es preferible una
+        # mascara por color de esquinas (instantanea, ~0 MB extra) antes
+        # que un OOM que mate el proceso y el usuario vea "Failed to fetch".
+        if not _hay_ram_para_grabcut():
+            print("[grabcut] RAM muy justa; usando mascara por esquinas")
             fg_mask = self._fallback_corner_mask(img_work)
+        else:
+            # Suavizado leve: ayuda a GrabCut a no engancharse con ruido/JPEG.
+            blurred = cv2.bilateralFilter(img_work, 5, 40, 40)
+
+            mask, rect = self._auto_mask(img_work)
+
+            bgd = np.zeros((1, 65), np.float64)
+            fgd = np.zeros((1, 65), np.float64)
+
+            try:
+                cv2.grabCut(
+                    blurred, mask, rect, bgd, fgd,
+                    self.iterations, cv2.GC_INIT_WITH_MASK,
+                )
+                # 0(BGD) y 2(PR_BGD) -> fondo ; 1(FGD) y 3(PR_FGD) -> objeto
+                fg_mask = np.where(
+                    (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0
+                ).astype(np.uint8)
+            except cv2.error:
+                # Si GrabCut no puede converger, degradamos a umbral de fondo
+                # por color de esquinas (mejor que devolver un error).
+                fg_mask = self._fallback_corner_mask(img_work)
+
+            del blurred, mask
 
         # Limpieza morfologica: quita motas sueltas y cierra huecos.
         kernel = np.ones((3, 3), np.uint8)
@@ -302,6 +319,12 @@ _FALLBACK_REMOVER = None
 # proceso muere. Se pide un margen para no quedar al limite.
 RAM_MINIMA_MB = 1400
 
+# RAM minima (MB) que necesita el motor algoritmico GrabCut. Es mucho mas
+# liviano que la IA, pero tampoco es gratis: con imagenes grandes el grafo
+# que construye puede pasar de 400 MB. Por debajo de este suelo conviene
+# degradar a un metodo aun mas barato antes que morir con OOM.
+RAM_MINIMA_GRABCUT_MB = 380
+
 
 def get_fallback_remover() -> BackgroundRemover:
     """Devuelve el motor algoritmico de respaldo (singleton)."""
@@ -341,6 +364,27 @@ def _hay_ram_suficiente() -> bool:
                     return total_mb >= RAM_MINIMA_MB
     except Exception:  # noqa: BLE001
         pass
+    return True
+
+
+def _hay_ram_para_grabcut() -> bool:
+    """
+    Comprueba si al proceso le queda RAM suficiente para GrabCut.
+
+    A diferencia de _hay_ram_suficiente() (que mira el LIMITE del cgroup para
+    decidir si cabe la red neuronal), aqui interesa la memoria DISPONIBLE en
+    este instante: GrabCut no falla por el limite del plan, falla cuando el
+    proceso ya tiene la memoria tomada por otras peticiones o por el modelo.
+    """
+    try:
+        with open("/proc/meminfo", "r") as fh:
+            for linea in fh:
+                if linea.startswith("MemAvailable:"):
+                    disponible_mb = int(linea.split()[1]) / 1024
+                    return disponible_mb >= RAM_MINIMA_GRABCUT_MB
+    except Exception:  # noqa: BLE001
+        pass
+    # Si no se puede medir, no bloqueamos el camino normal.
     return True
 
 

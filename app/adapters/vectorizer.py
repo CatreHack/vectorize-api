@@ -176,7 +176,11 @@ class VTracerVectorizer(Vectorizer):
         # Por eso hay que decodificar y RECODIFICAR siempre a PNG real:
         # escribir los bytes originales con nombre .png rompe con JPEG
         # (y WebP, BMP...) y produce un 500 al no poder decodificar.
-        png_bytes = self._to_png(image_bytes)
+        #
+        # Se acota el lado mayor: vtracer reserva memoria proporcional al
+        # AREA de la imagen y en 512 MB una foto grande mata el proceso.
+        # 1000 px conserva de sobra el detalle visual del vectorizado.
+        png_bytes = self._to_png(image_bytes, max_lado=1000)
 
         with tempfile.TemporaryDirectory() as tmp:
             in_path = os.path.join(tmp, "input.png")
@@ -200,10 +204,18 @@ class VTracerVectorizer(Vectorizer):
                 return f.read()
 
     @staticmethod
-    def _to_png(image_bytes: bytes) -> bytes:
+    def _to_png(image_bytes: bytes, max_lado: int | None = None) -> bytes:
         """
         Normaliza cualquier imagen soportada (JPEG, PNG, WebP, BMP, GIF...)
         a PNG real en memoria. Lanza ValueError si no se puede decodificar.
+
+        max_lado: si se indica, la imagen se reduce proporcionalmente para que
+        su lado mayor no supere ese valor. vtracer construye estructuras por
+        color sobre TODA la imagen, asi que su consumo de memoria crece muy
+        rapido con el area: una foto de 1024x1024 puede pasar de los 512 MB
+        del plan free y matar el proceso (el usuario veia 502 y luego
+        "Failed to fetch"). Reducir antes de vectorizar es la diferencia
+        entre un 200 y un crash.
         """
         img_array = np.frombuffer(image_bytes, dtype=np.uint8)
         img = cv2.imdecode(img_array, cv2.IMREAD_UNCHANGED)
@@ -220,6 +232,15 @@ class VTracerVectorizer(Vectorizer):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
         elif img.shape[2] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGRA)
+
+        if max_lado:
+            h, w = img.shape[:2]
+            if max(h, w) > max_lado:
+                escala = max_lado / float(max(h, w))
+                img = cv2.resize(
+                    img, (max(1, int(w * escala)), max(1, int(h * escala))),
+                    interpolation=cv2.INTER_AREA,
+                )
 
         ok, buf = cv2.imencode(".png", img)
         if not ok:
