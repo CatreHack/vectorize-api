@@ -172,11 +172,17 @@ class VTracerVectorizer(Vectorizer):
     def _vectorize_with_vtracer(self, image_bytes: bytes) -> str:
         import vtracer
 
+        # vtracer SOLO entiende PNG aunque el archivo lleve otra extension.
+        # Por eso hay que decodificar y RECODIFICAR siempre a PNG real:
+        # escribir los bytes originales con nombre .png rompe con JPEG
+        # (y WebP, BMP...) y produce un 500 al no poder decodificar.
+        png_bytes = self._to_png(image_bytes)
+
         with tempfile.TemporaryDirectory() as tmp:
             in_path = os.path.join(tmp, "input.png")
             out_path = os.path.join(tmp, "output.svg")
             with open(in_path, "wb") as f:
-                f.write(image_bytes)
+                f.write(png_bytes)
 
             vtracer.convert_image_to_svg_py(
                 in_path,
@@ -192,6 +198,33 @@ class VTracerVectorizer(Vectorizer):
             )
             with open(out_path, "r") as f:
                 return f.read()
+
+    @staticmethod
+    def _to_png(image_bytes: bytes) -> bytes:
+        """
+        Normaliza cualquier imagen soportada (JPEG, PNG, WebP, BMP, GIF...)
+        a PNG real en memoria. Lanza ValueError si no se puede decodificar.
+        """
+        img_array = np.frombuffer(image_bytes, dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise ValueError(
+                "No se pudo decodificar la imagen de entrada "
+                "(formato no soportado o archivo corrupto)"
+            )
+
+        # Asegurar 3 canales BGR + alfa opcional -> PNG BGRA/RGB valido.
+        if img.ndim == 2:  # escala de grises
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+        elif img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+        elif img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGRA)
+
+        ok, buf = cv2.imencode(".png", img)
+        if not ok:
+            raise ValueError("No se pudo recodificar la imagen a PNG")
+        return buf.tobytes()
 
 
 class PotraceVectorizer(Vectorizer):

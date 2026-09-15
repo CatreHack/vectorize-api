@@ -70,13 +70,17 @@ MODOS = {
         "descripcion": "Fotos y retratos. Conserva todo el detalle y el fondo.",
         "quitar_fondo": False,
         # Maxima fidelidad: 8 bits por canal (~16M colores), sin descartar
-        # manchas (filter_speckle=2 solo elimina ruido de compresion),
-        # umbral de capa bajo para no perder degradados suaves.
+        # manchas (filter_speckle=1 conserva el grano fino), umbral de capa
+        # bajo para no perder degradados suaves.
+        #
+        # corner_threshold bajo (30) = NO redondea la textura fina del
+        # pelaje/piel. Con 60 se perdia el detalle y salian "manchones".
+        # filter_speckle=1 conserva el grano fino (el peso no es problema).
         "vectorizer": {
             "color_precision": 8,
-            "filter_speckle": 2,
+            "filter_speckle": 1,
             "path_precision": 8,
-            "corner_threshold": 60,
+            "corner_threshold": 30,
             "layer_difference": 8,
             "mode": "spline",
         },
