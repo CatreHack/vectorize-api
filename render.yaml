@@ -7,18 +7,30 @@ services:
     # El modelo de IA (~4.7 MB) se intenta cachear durante el BUILD, para que
     # la primera conversion del usuario no dependa de la red. Se usa "|| true"
     # a proposito: si la descarga falla, el deploy NO se cae; el modelo se
-    # baja igual en runtime (o el motor cae a floodfill, que no necesita IA).
+    # baja igual en runtime (o el motor cae a GrabCut, que no necesita IA).
     buildCommand: pip install -r requirements.txt && (python -c "from rembg import new_session; new_session('u2netp')" || true)
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: "3.13.5"
-      # Motor de remocion de fondo: rembg (IA). Cae a floodfill si falla.
+      # Motor de remocion de fondo. "rembg" usa IA SOLO si la RAM alcanza
+      # (ver USE_AI); en el plan free de 512 MB la IA mataria el proceso con
+      # un OOM, asi que el adaptador detecta la RAM y usa el motor
+      # algoritmico GrabCut automaticamente.
       - key: BACKGROUND_REMOVER_ENGINE
         value: rembg
       - key: REMBG_MODEL
         value: u2netp
+      # INTERRUPTOR DE LA IA:
+      #   true  -> la IA (red neuronal u2netp) entra en servicio. Calidad
+      #            maxima, requiere un plan con RAM (>= 1.4 GB).
+      #   false -> siempre GrabCut (algoritmico, sin IA).
+      #   (sin definir) -> decide solo segun la RAM disponible.
+      # El dia que se escale a un plan con mas memoria, basta con cambiar
+      # este valor a "true" y redesplegar: NO hay que tocar codigo.
+      - key: USE_AI
+        value: "false"
       # Motor de vectorizacion: vtracer (curvas Bezier reales).
       # Cae a contour si la libreria no esta disponible.
       - key: VECTORIZER_ENGINE

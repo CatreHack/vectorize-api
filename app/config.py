@@ -16,6 +16,7 @@ import os
 from app.adapters.background_remover import (
     BackgroundRemover,
     FloodFillBackgroundRemover,
+    SmartBackgroundRemover,
     RembgBackgroundRemover,
     PhotoRoomBackgroundRemover,
     RemoveBgBackgroundRemover,
@@ -149,7 +150,13 @@ def get_background_remover() -> BackgroundRemover:
         return RemoveBgBackgroundRemover(api_key)
     if BACKGROUND_REMOVER_ENGINE == "floodfill":
         return FloodFillBackgroundRemover()
-    # Por defecto: IA local (con caida automatica a flood-fill si falla)
+    if BACKGROUND_REMOVER_ENGINE == "smart":
+        return SmartBackgroundRemover()
+    # Por defecto: el motor de IA cuando el entorno lo permite (plan con
+    # RAM suficiente / USE_AI=true) y, si no, el motor algoritmico
+    # GrabCut. RembgBackgroundRemover ya decide esto internamente, de modo
+    # que en el plan free el prototipo responde siempre y el dia que se
+    # escale basta con poner USE_AI=true (sin tocar codigo).
     return RembgBackgroundRemover(model_name=REMBG_MODEL)
 
 
