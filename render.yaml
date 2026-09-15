@@ -10,10 +10,15 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.13.5"
+      # Motores de alta calidad. Los presets por modo (foto/logo/dibujo)
+      # viven en app/config.py; estas variables solo eligen la
+      # implementacion concreta de cada etapa.
       - key: BACKGROUND_REMOVER_ENGINE
-        value: floodfill
+        value: rembg
+      - key: REMBG_MODEL
+        value: u2netp
       - key: VECTORIZER_ENGINE
-        value: contour
+        value: vtracer
       - key: MAX_UPLOAD_SIZE_MB
         value: "10"
       - key: ALLOWED_ORIGINS
