@@ -8,13 +8,14 @@ pydantic==2.9.2
 requests==2.32.3
 boto3==1.35.0
 
-# --- Motores de alta calidad ---
-# vtracer: vectorizacion con curvas Bezier reales y soporte de miles de
-# colores (imprescindible para el modo foto). Wheel cp313 manylinux listo.
+# --- Motores de alta calidad -------------------------------------------------
+# vtracer: vectorizacion con curvas Bezier reales (wheel cp313 disponible).
 vtracer==0.6.15
-
-# rembg + onnxruntime: quitar fondo con red neuronal U^2-Net. Entiende la
-# imagen (persona/objeto) en vez de adivinar por color, por lo que funciona
-# con fondos complejos y sujetos de tonos claros.
-rembg==2.0.84
-onnxruntime==1.30.0
+# rembg: remocion de fondo con IA (U^2-Net).
+# Se fija 2.0.65 a proposito: es la ultima version que NO exige
+# numpy>=2.3 / pillow>=12.1 (esas restricciones rompian el build con
+# ResolutionImpossible). Esta version declara numpy/pillow/scikit-image
+# sin fijar, asi que convive con el stack de arriba.
+rembg==2.0.65
+# onnxruntime (extra "cpu" de rembg): motor de inferencia de la red neuronal.
+onnxruntime==1.23.2

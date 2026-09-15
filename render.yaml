@@ -4,10 +4,11 @@ services:
     runtime: python
     plan: free
     pythonVersion: "3.13.5"
-    # Se descarga el modelo de IA durante el BUILD (no en la primera
-    # peticion del usuario): asi la primera conversion no depende de la
-    # red ni del tiempo de arranque del contenedor.
-    buildCommand: pip install -r requirements.txt && python -c "from rembg import new_session; new_session('u2netp')"
+    # El modelo de IA (~4.7 MB) se intenta cachear durante el BUILD, para que
+    # la primera conversion del usuario no dependa de la red. Se usa "|| true"
+    # a proposito: si la descarga falla, el deploy NO se cae; el modelo se
+    # baja igual en runtime (o el motor cae a floodfill, que no necesita IA).
+    buildCommand: pip install -r requirements.txt && (python -c "from rembg import new_session; new_session('u2netp')" || true)
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     autoDeploy: true
     envVars:
@@ -19,5 +20,6 @@ services:
       - key: REMBG_MODEL
         value: u2netp
       # Motor de vectorizacion: vtracer (curvas Bezier reales).
+      # Cae a contour si la libreria no esta disponible.
       - key: VECTORIZER_ENGINE
         value: vtracer
