@@ -5,6 +5,7 @@ Mismo patrón que background_remover.py: una interfaz común, varias
 implementaciones intercambiables por configuración.
 """
 from abc import ABC, abstractmethod
+import gc
 import io
 import subprocess
 import tempfile
@@ -12,6 +13,54 @@ import os
 
 import cv2
 import numpy as np
+
+# RAM minima (MB) que debe quedar LIBRE en el contenedor para intentar
+# vtracer a maxima calidad. Si no hay, se degrada a contornos avisando.
+# El plan free de Render da 512 MB en total.
+RAM_MINIMA_VTRACER_MB = 120
+
+
+def _hay_ram_para_vtracer_completo() -> bool:
+    """
+    True si queda RAM suficiente para intentar vtracer a calidad maxima.
+
+    Lee la memoria DISPONIBLE del cgroup (no la del host, que en Render
+    reporta los 31 GB de la maquina y hace creer que sobra memoria cuando
+    el contenedor esta al limite de 512 MB).
+    """
+    for ruta in (
+        "/sys/fs/cgroup/memory.current",
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ):
+        try:
+            with open(ruta) as f:
+                usado = int(f.read().strip())
+        except Exception:  # noqa: BLE001
+            continue
+
+        limite = None
+        for ruta_lim in (
+            "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+        ):
+            try:
+                with open(ruta_lim) as f:
+                    valor = f.read().strip()
+                if valor != "max":
+                    limite = int(valor)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+
+        if limite is None or limite > (1 << 40):  # limite absurdo = host
+            return True
+
+        libre_mb = (limite - usado) / (1024 * 1024)
+        print(f"[ram] libre={libre_mb:.0f} MB limite={limite/(1024*1024):.0f} MB")
+        return libre_mb >= RAM_MINIMA_VTRACER_MB
+
+    # Sin cgroup visible: no bloquear, dejar intentar.
+    return True
 
 
 class Vectorizer(ABC):
@@ -150,6 +199,7 @@ class VTracerVectorizer(Vectorizer):
         mode: str = "spline",
         layer_difference: int = 16,
         hierarchical: str = "stacked",
+        avisos: list | None = None,
     ):
         self.colormode = colormode
         self.color_precision = color_precision
@@ -159,15 +209,41 @@ class VTracerVectorizer(Vectorizer):
         self.mode = mode
         self.layer_difference = layer_difference
         self.hierarchical = hierarchical
+        # Lista compartida donde se anotan las degradaciones no fatales
+        # para que el usuario sepa que el resultado NO es el de maxima
+        # calidad (antes el fallback se tragaba el error en silencio).
+        self.avisos = avisos if avisos is not None else []
 
     def vectorize(self, image_bytes: bytes) -> str:
+        # Primer intento. Si vtracer falla (tipicamente por falta de RAM en
+        # el plan free: 512 MB, y 1024x1024 con color_precision=8 consume
+        # mucho), se reintenta UNA vez liberando memoria antes de degradar.
+        # Sin esto el resultado no era determinista: el mismo archivo daba
+        # un SVG bueno o uno degradado segun la RAM disponible en ese
+        # instante. Reintentar hace el resultado estable.
         try:
             return self._vectorize_with_vtracer(image_bytes)
         except Exception as exc:  # noqa: BLE001
-            # Salvavidas: si vtracer no esta instalado o falla, se usa el
-            # motor de contornos para NO dejar al usuario sin resultado.
-            print(f"[vtracer] fallo ({type(exc).__name__}: {exc}); usando contornos")
-            return ContourVectorizer().vectorize(image_bytes)
+            primer_error = f"{type(exc).__name__}: {exc}"
+
+        # Segundo intento: liberar todo lo posible y reintentar.
+        try:
+            gc.collect()
+            if _hay_ram_para_vtracer_completo():
+                return self._vectorize_with_vtracer(image_bytes)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[vtracer] reintento fallo ({type(exc).__name__}: {exc})")
+
+        # Ultimo recurso: motor de contornos. Se AVISA (no silencio) porque
+        # el resultado tiene mucha menos calidad que el de vtracer.
+        print(f"[vtracer] fallo ({primer_error}); usando contornos")
+        self.avisos.append(
+            "El motor de maxima calidad (vtracer) no pudo ejecutarse por "
+            "memoria insuficiente del servidor; se uso el metodo de "
+            "respaldo, con MENOS detalle (puede faltar definicion en el "
+            "pelo/bigotes y verse zonas planas). Vuelve a intentarlo."
+        )
+        return ContourVectorizer().vectorize(image_bytes)
 
     def _vectorize_with_vtracer(self, image_bytes: bytes) -> str:
         import vtracer

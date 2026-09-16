@@ -164,14 +164,20 @@ def get_background_remover() -> BackgroundRemover:
     return RembgBackgroundRemover(model_name=REMBG_MODEL)
 
 
-def get_vectorizer(parametros: dict | None = None) -> Vectorizer:
-    """Crea el vectorizador, opcionalmente con los parametros de un modo."""
+def get_vectorizer(parametros: dict | None = None,
+                   avisos: list | None = None) -> Vectorizer:
+    """Crea el vectorizador, opcionalmente con los parametros de un modo.
+
+    `avisos` es la lista compartida del pipeline: el vectorizador anota ahi
+    las degradaciones (p. ej. fallback a contornos por falta de RAM) para
+    que el usuario se entere de que el resultado no es el de maxima calidad.
+    """
     parametros = parametros or {}
     if VECTORIZER_ENGINE == "contour":
         return ContourVectorizer()
     if VECTORIZER_ENGINE == "potrace":
         return PotraceVectorizer()
     if VECTORIZER_ENGINE == "vtracer":
-        return VTracerVectorizer(**parametros)
+        return VTracerVectorizer(avisos=avisos, **parametros)
     # Motor por defecto: alta fidelidad
-    return VTracerVectorizer(**parametros)
+    return VTracerVectorizer(avisos=avisos, **parametros)

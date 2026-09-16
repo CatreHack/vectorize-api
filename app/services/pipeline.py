@@ -62,7 +62,10 @@ def convert_image(image_bytes: bytes, mode: str | None = None,
         fuente = image_bytes
 
     # 2) Vectorizacion con los parametros de calidad del modo.
-    vectorizer = get_vectorizer(preset.get("vectorizer"))
+    #    Los `avisos` se comparten con el vectorizador para que pueda
+    #    reportar degradaciones (antes el fallback a contornos ocurria en
+    #    silencio y el usuario recibia un SVG peor sin saberlo).
+    vectorizer = get_vectorizer(preset.get("vectorizer"), avisos=avisos)
     try:
         svg = vectorizer.vectorize(fuente)
     except Exception as exc:  # noqa: BLE001
