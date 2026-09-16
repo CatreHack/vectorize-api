@@ -14,72 +14,6 @@ import cv2
 import numpy as np
 
 
-# RAM (MB) que se exige LIBRE DENTRO DEL CONTENEDOR para intentar el
-# vectorizado a resolucion completa. Por debajo de esto se reduce la imagen
-# ANTES de llamar a vtracer: reducir despues no sirve, porque el proceso ya
-# murio (OOM kill) y el usuario solo ve un 502.
-RAM_MINIMA_VTRACER_MB = 420
-
-
-def _mem_libre_contenedor_mb() -> float | None:
-    """
-    Memoria realmente libre DENTRO del contenedor, en MB.
-
-    OJO (error que costo varios 502): /proc/meminfo describe el HOST fisico,
-    no el contenedor. En Render devolvia "13 GB disponibles" mientras el
-    limite real era 512 MB, asi que cualquier guarda basada en meminfo nunca
-    se activaba y el proceso moria por OOM.
-
-    La fuente valida es el cgroup:
-        libre = memory.max - memory.current
-    Si no hay cgroup legible se devuelve None para que el llamador decida con
-    un criterio conservador (no "asumir que hay memoria").
-    """
-    try:
-        tope = None
-        for ruta in ("/sys/fs/cgroup/memory.max",
-                     "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-            try:
-                with open(ruta, "r") as fh:
-                    valor = fh.read().strip()
-                if valor and valor != "max" and valor.isdigit():
-                    tope = int(valor)
-                    break
-            except Exception:  # noqa: BLE001
-                continue
-
-        actual = None
-        for ruta in ("/sys/fs/cgroup/memory.current",
-                     "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
-            try:
-                with open(ruta, "r") as fh:
-                    valor = fh.read().strip()
-                if valor and valor.isdigit():
-                    actual = int(valor)
-                    break
-            except Exception:  # noqa: BLE001
-                continue
-
-        if tope is not None:
-            # Sin lectura de consumo, el peor caso es que TODO el tope este
-            # ocupado; pero para no degradar de mas se asume medio tope.
-            usado = actual if actual is not None else tope // 2
-            return max(0.0, (tope - usado) / 1024 / 1024)
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-def _hay_ram_para_vtracer_completo() -> bool:
-    """True si conviene intentar vtracer a resolucion completa."""
-    libre = _mem_libre_contenedor_mb()
-    if libre is None:
-        # Sin datos: ser conservador. En un plan de 512 MB la resolucion
-        # completa en modo color es justo la que revienta, asi que se reduce.
-        return False
-    return libre >= RAM_MINIMA_VTRACER_MB
-
-
 class Vectorizer(ABC):
     """Contrato que debe cumplir cualquier motor de vectorización."""
 
@@ -226,12 +160,6 @@ class VTracerVectorizer(Vectorizer):
         self.layer_difference = layer_difference
         self.hierarchical = hierarchical
 
-        # Se activan cuando el motor tuvo que reducir la resolucion por
-        # falta de memoria; el pipeline los convierte en un aviso visible
-        # para no entregar un resultado degradado como si fuera normal.
-        self.degradado = False
-        self.motivo_degradado = ""
-
     def vectorize(self, image_bytes: bytes) -> str:
         try:
             return self._vectorize_with_vtracer(image_bytes)
@@ -248,51 +176,7 @@ class VTracerVectorizer(Vectorizer):
         # Por eso hay que decodificar y RECODIFICAR siempre a PNG real:
         # escribir los bytes originales con nombre .png rompe con JPEG
         # (y WebP, BMP...) y produce un 500 al no poder decodificar.
-        #
-        # TAMANO: vtracer reserva memoria en funcion del AREA de la imagen y
-        # del color_precision. En el plan free (512 MB) una foto grande con
-        # color_precision=8 mata el proceso -> 502 -> el navegador mostraba
-        # "Failed to fetch" / el backend degradaba en silencio.
-        #
-        # Estrategia: se intenta PRIMERO a resolucion completa para no perder
-        # calidad (el usuario prioriza calidad sobre peso). Solo si al proceso
-        # no le queda RAM para el intento completo se reduce antes de entrar,
-        # de modo que el resultado siga saliendo en vez de reventar.
-        intentos: list[int | None] = [None, 1000, 800]
-        if not _hay_ram_para_vtracer_completo():
-            intentos = [1000, 800]
-
-        ultimo_error: Exception | None = None
-        for max_lado in intentos:
-            png_bytes = self._to_png(image_bytes, max_lado=max_lado)
-            try:
-                return self._vtracer_png(png_bytes)
-            except MemoryError as exc:  # noqa: PERF203
-                ultimo_error = exc
-                print(f"[vtracer] MemoryError con max_lado={max_lado}; "
-                      f"reintentando mas pequeno")
-            except Exception as exc:  # noqa: BLE001
-                ultimo_error = exc
-                print(f"[vtracer] fallo ({type(exc).__name__}: {exc}) con "
-                      f"max_lado={max_lado}")
-                # Un fallo que NO es de memoria (p.ej. vtracer ausente) no se
-                # arregla reduciendo: se propaga al salvavidas de contornos.
-                raise
-
-        # Se agotaron los intentos: se avisa para que el pipeline lo cuente
-        # al usuario (nunca devolver un SVG degradado como si fuera normal).
-        self.degradado = True
-        self.motivo_degradado = (
-            "La imagen es grande y el plan actual tiene poca memoria: "
-            "se vectorizo en tamano reducido."
-        )
-        raise ultimo_error if ultimo_error else MemoryError(
-            "vtracer no pudo vectorizar la imagen"
-        )
-
-    def _vtracer_png(self, png_bytes: bytes) -> str:
-        """Ejecuta vtracer sobre bytes PNG ya normalizados y acotados."""
-        import vtracer
+        png_bytes = self._to_png(image_bytes)
 
         with tempfile.TemporaryDirectory() as tmp:
             in_path = os.path.join(tmp, "input.png")
@@ -316,18 +200,10 @@ class VTracerVectorizer(Vectorizer):
                 return f.read()
 
     @staticmethod
-    def _to_png(image_bytes: bytes, max_lado: int | None = None) -> bytes:
+    def _to_png(image_bytes: bytes) -> bytes:
         """
         Normaliza cualquier imagen soportada (JPEG, PNG, WebP, BMP, GIF...)
         a PNG real en memoria. Lanza ValueError si no se puede decodificar.
-
-        max_lado: si se indica, la imagen se reduce proporcionalmente para que
-        su lado mayor no supere ese valor. vtracer construye estructuras por
-        color sobre TODA la imagen, asi que su consumo de memoria crece muy
-        rapido con el area: una foto de 1024x1024 puede pasar de los 512 MB
-        del plan free y matar el proceso (el usuario veia 502 y luego
-        "Failed to fetch"). Reducir antes de vectorizar es la diferencia
-        entre un 200 y un crash.
         """
         img_array = np.frombuffer(image_bytes, dtype=np.uint8)
         img = cv2.imdecode(img_array, cv2.IMREAD_UNCHANGED)
@@ -344,15 +220,6 @@ class VTracerVectorizer(Vectorizer):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
         elif img.shape[2] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGRA)
-
-        if max_lado:
-            h, w = img.shape[:2]
-            if max(h, w) > max_lado:
-                escala = max_lado / float(max(h, w))
-                img = cv2.resize(
-                    img, (max(1, int(w * escala)), max(1, int(h * escala))),
-                    interpolation=cv2.INTER_AREA,
-                )
 
         ok, buf = cv2.imencode(".png", img)
         if not ok:

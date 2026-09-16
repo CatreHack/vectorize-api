@@ -49,13 +49,6 @@ def convert_image(image_bytes: bytes, mode: str | None = None,
         remover = get_background_remover()
         try:
             fuente = remover.remove_background(image_bytes)
-            # El quitafondo puede haber usado el metodo rapido por falta de
-            # memoria: el usuario debe saber que el borde es menos preciso.
-            if getattr(remover, "degradado", False):
-                avisos.append(
-                    getattr(remover, "motivo_degradado", "")
-                    or "El fondo se quito con el metodo rapido por falta de memoria."
-                )
         except Exception as exc:  # noqa: BLE001
             # Ultimo salvavidas: si TODO falla, vectorizamos el original
             # antes que devolver un error al usuario.
@@ -72,14 +65,6 @@ def convert_image(image_bytes: bytes, mode: str | None = None,
     vectorizer = get_vectorizer(preset.get("vectorizer"))
     try:
         svg = vectorizer.vectorize(fuente)
-        # El motor puede haber reducido la resolucion por falta de memoria:
-        # eso baja la calidad y el usuario DEBE saberlo (antes se entregaba
-        # en silencio y parecia que la app habia empeorado).
-        if getattr(vectorizer, "degradado", False):
-            avisos.append(
-                getattr(vectorizer, "motivo_degradado", "")
-                or "La calidad se redujo por falta de memoria del servidor."
-            )
     except Exception as exc:  # noqa: BLE001
         # Red de seguridad final: nunca devolver un error 500 al usuario
         # si al menos uno de los dos motores puede producir un SVG.

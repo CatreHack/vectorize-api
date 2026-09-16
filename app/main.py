@@ -59,66 +59,6 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/mem")
-def mem():
-    """
-    Diagnostico de memoria: muestra que ve el proceso sobre sus propios
-    limites. Sirve para confirmar si el plan free (512 MB) es realmente el
-    techo y si /proc/meminfo reporta el host o el contenedor: si MemAvailable
-    sale muy por encima del limite del cgroup, la guarda basada en meminfo no
-    puede evitar un OOM y hay que decidir el tamano por umbral fijo.
-    """
-    info: dict[str, object] = {}
-
-    def leer(path: str) -> str | None:
-        try:
-            with open(path, "r") as fh:
-                return fh.read().strip()
-        except Exception:  # noqa: BLE001
-            return None
-
-    meminfo = leer("/proc/meminfo") or ""
-    for linea in meminfo.splitlines():
-        if linea.startswith("MemAvailable:"):
-            info["meminfo_MemAvailable_MB"] = round(int(linea.split()[1]) / 1024, 1)
-        elif linea.startswith("MemTotal:"):
-            info["meminfo_MemTotal_MB"] = round(int(linea.split()[1]) / 1024, 1)
-
-    for clave, path in (
-        ("cgroup_v2_max", "/sys/fs/cgroup/memory.max"),
-        ("cgroup_v2_current", "/sys/fs/cgroup/memory.current"),
-        ("cgroup_v1_limit", "/sys/fs/cgroup/memory/memory.limit_in_bytes"),
-        ("cgroup_v1_usage", "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
-    ):
-        valor = leer(path)
-        if valor:
-            info[clave] = valor
-
-    status = leer("/proc/self/status") or ""
-    for linea in status.splitlines():
-        if linea.startswith("VmRSS:"):
-            info["rss_MB"] = round(int(linea.split()[1]) / 1024, 1)
-            break
-
-    info["pid"] = os.getpid()
-
-    # Interpretacion rapida: si el cgroup declara un limite mucho menor que
-    # MemTotal, /proc/meminfo describe el HOST y no sirve como guarda; en ese
-    # caso hay que decidir por umbral fijo, no por memoria disponible.
-    try:
-        tope = info.get("cgroup_v2_max")
-        if isinstance(tope, str) and tope.isdigit():
-            limite_mb = round(int(tope) / 1024 / 1024, 1)
-            info["cgroup_v2_max_MB"] = limite_mb
-            total = info.get("meminfo_MemTotal_MB")
-            if isinstance(total, (int, float)):
-                info["meminfo_es_del_host"] = bool(total > limite_mb * 1.5)
-    except Exception:  # noqa: BLE001
-        pass
-
-    return info
-
-
 @app.get("/api/modos", response_model=list[ModoInfo])
 def listar_modos():
     """Describe los modos disponibles para que el frontend se arme solo."""
